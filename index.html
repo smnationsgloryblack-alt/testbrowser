@@ -1,0 +1,315 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sondage live</title>
+
+<!--
+  =========================================================================
+  TEMPLATE DE DEMARRAGE — ecran interactif (sondage / vote)
+  =========================================================================
+  Fichier unique, aucune dependance externe. Sers-le en HTTPS, puis pose
+  l'ecran en jeu :
+
+      /browserframe 6 4 https://ton-site/demo-vote.html?screen=vote1 vote1
+
+  Les joueurs votent avec :   /frame vote1 vote A
+  Toi (staff) pilotes avec :  /frame-admin vote1 reset
+                              /frame-admin vote1 question Ta nouvelle question ?
+
+  -------------------------------------------------------------------------
+  A LIRE AVANT DE T'EN SERVIR EN VRAI
+  -------------------------------------------------------------------------
+  1) L'ETAT CI-DESSOUS EST LOCAL A CHAQUE JOUEUR.
+     Le mod envoie la commande d'un joueur UNIQUEMENT dans la page de ce
+     joueur. Il n'y a aucune synchronisation entre les clients. Donc ici,
+     chacun voit SES propres votes. Pour un vrai sondage partage, envoie
+     chaque vote a TON backend (voir sendToBackend plus bas) et fais lire
+     l'etat commun par toutes les pages (polling ou SSE).
+
+  2) L'IDENTITE PEUT ETRE ABSENTE.
+     Elle n'est fournie qu'aux joueurs utilisant le launcher a jour. Les
+     autres peuvent quand meme participer : ne bloque jamais l'interaction
+     sur la presence de l'identite, traite-les comme des invites.
+
+  3) NE FAIS JAMAIS CONFIANCE A LA PAGE.
+     Le jeton d'identite doit etre verifie par TON backend (signature via la
+     JWKS). Cote page, il ne sert qu'a l'affichage.
+  =========================================================================
+-->
+
+<style>
+  :root {
+    /* ---- Personnalise ici : ces 5 variables suffisent a rehabiller la page ---- */
+    --bg:      #0b0e14;   /* fond */
+    --panel:   #141922;   /* cartes */
+    --ink:     #f2f5f9;   /* texte principal */
+    --muted:   #7f8ea3;   /* texte secondaire */
+    --accent:  #ffb020;   /* couleur d'accent (barres, focus) */
+    --lead:    #35d07f;   /* option en tete */
+
+    --edge: #232b38;
+    --radius: 14px;
+    /* Condense et gras : lisible a plusieurs blocs de distance en jeu. */
+    --display: "Franklin Gothic Medium", "Arial Narrow", "Haettenschweiler", Impact, sans-serif;
+    --mono: ui-monospace, Consolas, "SF Mono", monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    /* Leger halo pour eviter un aplat mort, sans cout de repaint (statique). */
+    background-image: radial-gradient(120% 80% at 50% -20%, #1b2331 0%, var(--bg) 60%);
+    color: var(--ink);
+    font-family: var(--display);
+    min-height: 100vh;
+    padding: clamp(18px, 3vw, 40px);
+    display: flex; flex-direction: column; gap: clamp(14px, 2vw, 26px);
+  }
+
+  /* ---------- En-tete ---------- */
+  header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: clamp(11px, 1.1vw, 14px);
+    letter-spacing: .22em; text-transform: uppercase; color: var(--accent);
+    margin-bottom: 8px;
+  }
+  h1 {
+    font-size: clamp(30px, 5.2vw, 68px); line-height: .98;
+    letter-spacing: -.5px; text-transform: uppercase; text-wrap: balance;
+  }
+  .total { text-align: right; white-space: nowrap; }
+  .total b { display: block; font-size: clamp(34px, 5vw, 64px); line-height: 1; font-variant-numeric: tabular-nums; }
+  .total span { font-family: var(--mono); font-size: 12px; letter-spacing: .16em;
+                text-transform: uppercase; color: var(--muted); }
+
+  /* ---------- Options ---------- */
+  .options { display: flex; flex-direction: column; gap: 10px; flex: 1; justify-content: center; }
+
+  .opt {
+    position: relative; overflow: hidden;
+    background: var(--panel); border: 1px solid var(--edge); border-radius: var(--radius);
+    padding: clamp(12px, 1.6vw, 20px) clamp(16px, 2vw, 26px);
+    display: grid; grid-template-columns: auto 1fr auto; align-items: center;
+    gap: clamp(14px, 2vw, 28px);
+  }
+  /* Barre de remplissage : transform seul -> pas de reflow, peu couteux en OSR. */
+  .fill {
+    position: absolute; inset: 0; transform-origin: left center;
+    transform: scaleX(0); background: linear-gradient(90deg, #2a2032, #3a2c18);
+    transition: transform .45s cubic-bezier(.22,.8,.3,1);
+  }
+  .opt.leading .fill { background: linear-gradient(90deg, #17301f, #1c3d28); }
+  .opt > * { position: relative; }
+
+  .key {
+    font-size: clamp(26px, 3.4vw, 46px); line-height: 1;
+    width: 1.6em; height: 1.6em; display: grid; place-items: center;
+    border: 2px solid var(--edge); border-radius: 10px; color: var(--accent);
+  }
+  .opt.leading .key { color: var(--lead); border-color: color-mix(in srgb, var(--lead) 45%, var(--edge)); }
+  .label { font-size: clamp(22px, 3vw, 40px); line-height: 1.05; text-transform: uppercase; }
+  .count { font-size: clamp(26px, 3.4vw, 46px); font-variant-numeric: tabular-nums; }
+  .pct { font-family: var(--mono); font-size: clamp(11px, 1.1vw, 14px); color: var(--muted); display: block; text-align: right; }
+
+  /* Flash au vote : joue une fois, puis plus rien ne s'anime. */
+  @keyframes hit { from { background: #202a38; } to { background: var(--panel); } }
+  .opt.hit { animation: hit .5s ease-out; }
+  @media (prefers-reduced-motion: reduce) { .fill { transition: none; } .opt.hit { animation: none; } }
+
+  /* ---------- Pied ---------- */
+  footer {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px;
+    border-top: 1px solid var(--edge); padding-top: 14px;
+    font-family: var(--mono); font-size: clamp(12px, 1.2vw, 15px); color: var(--muted);
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; margin-right: 8px; }
+  .on .dot { background: var(--lead); }
+  .cmd { color: var(--ink); }
+  .cmd b { color: var(--accent); }
+  .who { margin-left: auto; color: var(--ink); }
+  .who em { font-style: normal; color: var(--muted); }
+</style>
+
+<header>
+  <div>
+    <div class="eyebrow">Sondage en direct</div>
+    <h1 id="question">Quelle est ta réponse&nbsp;?</h1>
+  </div>
+  <div class="total"><b id="total">0</b><span>votes</span></div>
+</header>
+
+<main class="options" id="options"></main>
+
+<footer id="status">
+  <span><i class="dot"></i><span id="bridge">connexion…</span></span>
+  <span class="cmd">vote : <b>/frame <span class="sid">…</span> vote A</b></span>
+  <span class="who" id="who"><em>invité</em></span>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ====================== CONFIGURATION ====================== */
+  var OPTIONS = [                      // <- tes options
+    { key: 'A', label: 'Option A' },
+    { key: 'B', label: 'Option B' },
+    { key: 'C', label: 'Option C' },
+    { key: 'D', label: 'Option D' }
+  ];
+  var ONE_VOTE_PER_PLAYER = true;      // un joueur ne vote qu'une fois
+  /* =========================================================== */
+
+  var votes = {};                      // { A: 3, B: 1, ... }
+  var voters = {};                     // qui a deja vote (demo locale)
+  var els = {};
+  var $ = function (id) { return document.getElementById(id); };
+
+  /* ---------- Rendu ---------- */
+  function build() {
+    var frag = document.createDocumentFragment();
+    OPTIONS.forEach(function (o) {
+      votes[o.key] = 0;
+      var row = document.createElement('div');
+      row.className = 'opt';
+      row.innerHTML =
+        '<div class="fill"></div>' +
+        '<div class="key"></div>' +
+        '<div class="label"></div>' +
+        '<div><div class="count">0</div><span class="pct">0%</span></div>';
+      // textContent : les libelles restent du texte, jamais du HTML.
+      row.querySelector('.key').textContent = o.key;
+      row.querySelector('.label').textContent = o.label;
+      els[o.key] = row;
+      frag.appendChild(row);
+    });
+    $('options').appendChild(frag);
+  }
+
+  function render(hitKey) {
+    var total = 0;
+    OPTIONS.forEach(function (o) { total += votes[o.key]; });
+    $('total').textContent = total;
+
+    var best = 0;
+    OPTIONS.forEach(function (o) { if (votes[o.key] > best) { best = votes[o.key]; } });
+
+    OPTIONS.forEach(function (o) {
+      var row = els[o.key], n = votes[o.key];
+      var pct = total ? Math.round(n * 100 / total) : 0;
+      row.querySelector('.count').textContent = n;
+      row.querySelector('.pct').textContent = pct + '%';
+      row.querySelector('.fill').style.transform = 'scaleX(' + (total ? n / total : 0) + ')';
+      row.classList.toggle('leading', n > 0 && n === best);
+    });
+
+    if (hitKey && els[hitKey]) {
+      var el = els[hitKey];
+      el.classList.remove('hit');
+      void el.offsetWidth;            // relance l'animation
+      el.classList.add('hit');
+    }
+  }
+
+  /* ---------- Identite (peut etre absente : ancien launcher) ---------- */
+  // Decodage POUR AFFICHAGE UNIQUEMENT. La verification (signature) se fait
+  // sur ton backend via la JWKS — jamais ici.
+  function readIdentity() {
+    var tok = window.ngScreen && window.ngScreen.identity;
+    if (!tok) { return null; }
+    try {
+      var p = tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (p.length % 4) { p += '='; }
+      var c = JSON.parse(decodeURIComponent(escape(atob(p))));
+      return { id: c.sub || null, name: c.name || null, token: tok };
+    } catch (e) { return null; }
+  }
+
+  function showWho(who) {
+    $('who').innerHTML = who && who.name
+      ? 'connecté : ' + escapeHtml(who.name)
+      : '<em>invité (identité non fournie)</em>';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  /* ---------- Reception des commandes ---------- */
+  function onCommand(evt) {
+    var who = readIdentity();
+    // Sans identite (ancien launcher), on autorise quand meme : cle invite.
+    var voterKey = who && who.id ? who.id : 'guest';
+
+    if (evt.action === 'vote') {
+      var choice = String(evt.args[0] || '').toUpperCase();
+      if (!(choice in votes)) { return; }              // option inconnue : ignore
+      if (ONE_VOTE_PER_PLAYER && voters[voterKey]) { return; }
+      voters[voterKey] = choice;
+      votes[choice]++;
+      render(choice);
+      sendToBackend(evt, choice, who);
+      return;
+    }
+
+    // Actions staff (/frame-admin) — a proteger cote backend, pas ici.
+    if (evt.action === 'reset') {
+      OPTIONS.forEach(function (o) { votes[o.key] = 0; });
+      voters = {};
+      render();
+      return;
+    }
+    if (evt.action === 'question') {
+      $('question').textContent = evt.args.join(' ') || 'Quelle est ta réponse ?';
+    }
+  }
+
+  /* ---------- Branchement de TON backend (a activer) ---------- */
+  function sendToBackend(evt, choice, who) {
+    return;   // <- supprime cette ligne pour activer
+
+    /* Si ton API est sur la MEME origine que cette page, le mod ajoute tout
+       seul l'en-tete NG-Identity : rien a faire cote JS.
+       Sinon, envoie le jeton toi-meme (2e argument commente ci-dessous).
+
+    fetch('/api/vote', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+        // , 'Authorization': 'Bearer ' + (who && who.token || '')   // autre origine
+      },
+      body: JSON.stringify({
+        screen: window.ngScreen.screenId,
+        choice: choice
+      })
+    });
+
+    Cote backend : verifie le JWT (JWKS -> signature EdDSA, iss, aud = TON
+    origine, exp), puis enregistre le vote pour jwt.sub. Ne fais jamais
+    confiance au "choice" sans le valider. */
+  }
+
+  /* ---------- Demarrage ---------- */
+  build();
+  render();
+
+  (function wait() {
+    if (!window.ngScreen) { return setTimeout(wait, 200); }
+
+    $('status').classList.add('on');
+    $('bridge').textContent = 'écran ' + (window.ngScreen.screenId || '?');
+    Array.prototype.forEach.call(document.querySelectorAll('.sid'), function (n) {
+      n.textContent = window.ngScreen.screenId || 'id';
+    });
+
+    window.ngScreen.onCommand(onCommand);
+
+    // L'identite arrive de facon asynchrone (et se renouvelle) : on la relit.
+    showWho(readIdentity());
+    setInterval(function () { showWho(readIdentity()); }, 2000);
+  })();
+})();
+</script>
