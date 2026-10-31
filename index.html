@@ -102,21 +102,25 @@
   'use strict';
 
   var $ = function (id) { return document.getElementById(id); };
-  var identityPayload = null;
+  var currentClaims = null;
 
+  /* ---------- Identité ---------- */
+  // Lit le JWT exposé par le launcher et renvoie { id, name, token, claims }
+  // (claims = payload complet, utile pour iss / aud / exp).
   function readIdentity() {
     var tok = window.ngScreen && window.ngScreen.identity;
-    if (!tok) return null;
+    if (!tok) { return null; }
     try {
       var p = tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-      while (p.length % 4) p += '=';
-      return JSON.parse(decodeURIComponent(escape(atob(p))));
+      while (p.length % 4) { p += '='; }
+      var c = JSON.parse(decodeURIComponent(escape(atob(p))));
+      return { id: c.sub || null, name: c.name || null, token: tok, claims: c };
     } catch (e) { return null; }
   }
 
-  function renderIdentity() {
-    identityPayload = readIdentity();
-    if (!identityPayload) {
+  function showWho(who) {
+    if (!who) {
+      currentClaims = null;
       $('identity-name').textContent = 'invité (aucune identité)';
       $('identity-sub').textContent = '—';
       $('identity-iss').textContent = '—';
@@ -124,22 +128,32 @@
       $('identity-expire').textContent = '—';
       return;
     }
-    $('identity-name').textContent = identityPayload.name || '—';
-    $('identity-sub').textContent = identityPayload.sub || '—';
-    $('identity-iss').textContent = identityPayload.iss || '—';
-    $('identity-aud').textContent = identityPayload.aud || '—';
+    var c = who.claims;
+    currentClaims = c;
+    $('identity-name').textContent = who.name || '—';
+    $('identity-sub').textContent = who.id || '—';
+    $('identity-iss').textContent = c.iss || '—';
+    $('identity-aud').textContent = Array.isArray(c.aud) ? c.aud.join(', ') : (c.aud || '—');
+    updateExpireCountdown();
   }
 
   function updateExpireCountdown() {
-    if (!identityPayload || !identityPayload.exp) {
+    if (!currentClaims || !currentClaims.exp) {
       $('identity-expire').textContent = '—';
       return;
     }
-    var remaining = identityPayload.exp - Math.floor(Date.now() / 1000);
+    var remaining = currentClaims.exp - Math.floor(Date.now() / 1000);
     $('identity-expire').textContent = remaining > 0 ? remaining + 's' : 'expiré';
   }
 
-  function addCommandRow(evt) {
+  /* ---------- Commandes ---------- */
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function onCommand(evt) {
     var row = document.createElement('div');
     row.className = 'cmd-row';
 
@@ -156,28 +170,23 @@
     $('commands-list').prepend(row);
   }
 
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"]/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-    });
-  }
+  /* ---------- Démarrage ---------- */
+  showWho(null);
 
   (function wait() {
     if (!window.ngScreen) { return setTimeout(wait, 200); }
 
     $('bridge-badge').textContent = 'bridge connecté';
     $('bridge-badge').classList.remove('off');
-
     $('screen-id').textContent = window.ngScreen.screenId || '—';
     $('bridge-version').textContent = 'version du bridge : ' + (window.ngScreen.version || '1');
 
-    renderIdentity();
-    setInterval(renderIdentity, 2000);
-    setInterval(updateExpireCountdown, 1000);
+    window.ngScreen.onCommand(onCommand);
 
-    window.ngScreen.onCommand(function (evt) {
-      addCommandRow(evt);
-    });
+    // L'identité arrive de façon asynchrone (et se renouvelle) : on la relit.
+    showWho(readIdentity());
+    setInterval(function () { showWho(readIdentity()); }, 2000);
+    setInterval(updateExpireCountdown, 1000);
   })();
 })();
 </script>
